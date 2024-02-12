@@ -152,7 +152,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 
 				log.Println("Successfully written", n, "bytes to file", fileStorePath)
 			} else {
-				info, err := s3.PutObject(context.Background(), conf.S3BucketName, p, r.Body, r.ContentLength, minio.PutObjectOptions{
+				info, err := s3.PutObject(context.Background(), conf.S3BucketName, strings.TrimPrefix(p, "/"), r.Body, r.ContentLength, minio.PutObjectOptions{
 					SendContentMd5: true, // backblaze b2
 				})
 
