@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -25,30 +26,38 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 /*
  * Configuration of this server
  */
 type Config struct {
-	Listenport   string
-	UnixSocket   bool
-	Secret       string
-	Storedir     string
-	UploadSubDir string
+	Listenport     string
+	UnixSocket     bool
+	Secret         string
+	Storedir       string
+	UploadSubDir   string
+	S3Endpoint     string
+	S3KeyId        string
+	S3AccessKey    string
+	S3BucketName   string
+	S3BucketRegion string
 }
 
 var conf Config
+var s3 *minio.Client
 var versionString string = "0.0.0"
 
 var ALLOWED_METHODS string = strings.Join(
-    []string{
-        http.MethodOptions,
-        http.MethodHead,
-        http.MethodGet,
-        http.MethodPut,
-    },
-    ", ",
+	[]string{
+		http.MethodOptions,
+		http.MethodHead,
+		http.MethodGet,
+		http.MethodPut,
+	},
+	", ",
 )
 
 /*
@@ -117,30 +126,42 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		 * Check whether calculated (expected) MAC is the MAC that client send in "v" URL parameter
 		 */
 		if hmac.Equal([]byte(macString), []byte(a["v"][0])) {
-			// Make sure the path exists
-			err := os.MkdirAll(filepath.Dir(absFilename), os.ModePerm)
-			if err != nil {
-				log.Println("Could not make directories:", err)
-				http.Error(w, "500 Internal Server Error", 500)
-				return
+			if s3 == nil {
+				// Make sure the path exists
+				err := os.MkdirAll(filepath.Dir(absFilename), os.ModePerm)
+				if err != nil {
+					log.Println("Could not make directories:", err)
+					http.Error(w, "500 Internal Server Error", 500)
+					return
+				}
+
+				file, err := os.OpenFile(absFilename, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+				defer file.Close()
+				if err != nil {
+					log.Println("Creating new file failed:", err)
+					http.Error(w, "409 Conflict", 409)
+					return
+				}
+
+				n, err := io.Copy(file, r.Body)
+				if err != nil {
+					log.Println("Writing to new file failed:", err)
+					http.Error(w, "500 Internal Server Error", 500)
+					return
+				}
+
+				log.Println("Successfully written", n, "bytes to file", fileStorePath)
+			} else {
+				info, err := s3.PutObject(context.Background(), conf.S3BucketName, fileStorePath, r.Body, -1, minio.PutObjectOptions{})
+				if err != nil {
+					log.Println("Writing to new s3 object failed:", err)
+					http.Error(w, "500 Internal Server Error", 500)
+					return
+				}
+
+				log.Println("Successfully written", info.Size, "bytes to s3 object", info.Location)
 			}
 
-			file, err := os.OpenFile(absFilename, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
-			defer file.Close()
-			if err != nil {
-				log.Println("Creating new file failed:", err)
-				http.Error(w, "409 Conflict", 409)
-				return
-			}
-
-			n, err := io.Copy(file, r.Body)
-			if err != nil {
-				log.Println("Writing to new file failed:", err)
-				http.Error(w, "500 Internal Server Error", 500)
-				return
-			}
-
-			log.Println("Successfully written", n, "bytes to file", fileStorePath)
 			w.WriteHeader(http.StatusCreated)
 			return
 		} else {
@@ -222,7 +243,6 @@ func main() {
 		log.Fatalln("Could not parse flags")
 	}
 
-
 	/*
 	 * Read config file
 	 */
@@ -235,6 +255,20 @@ func main() {
 		proto = "unix"
 	} else {
 		proto = "tcp"
+	}
+
+	if conf.S3Endpoint != "" {
+		s3, err = minio.New(conf.S3Endpoint, &minio.Options{
+			Creds:  credentials.NewStaticV4(conf.S3KeyId, conf.S3AccessKey, ""),
+			Secure: true,
+		})
+		if err != nil {
+			log.Fatalln("Could not create S3 client", err)
+		}
+
+		log.Println("Using S3 storage")
+	} else {
+		log.Println("Using disk storage")
 	}
 
 	/*
