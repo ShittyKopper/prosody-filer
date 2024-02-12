@@ -152,7 +152,10 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 
 				log.Println("Successfully written", n, "bytes to file", fileStorePath)
 			} else {
-				info, err := s3.PutObject(context.Background(), conf.S3BucketName, fileStorePath, r.Body, -1, minio.PutObjectOptions{})
+				info, err := s3.PutObject(context.Background(), conf.S3BucketName, fileStorePath, r.Body, -1, minio.PutObjectOptions{
+					SendContentMd5: true, // backblaze b2
+				})
+
 				if err != nil {
 					log.Println("Writing to new s3 object failed:", err)
 					http.Error(w, "500 Internal Server Error", 500)
